@@ -1,0 +1,19 @@
+# Environment
+.env
+venv/
+__pycache__/
+
+# Config with secrets
+firebase_voice_config.py
+credentials.json
+token.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
