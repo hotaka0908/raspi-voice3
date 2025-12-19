@@ -46,11 +46,12 @@ CONFIG = {
     "model": "gpt-4o-realtime-preview-2024-12-17",
     "voice": "shimmer",  # alloy, echo, shimmer, etc.
 
-    # オーディオ設定（Realtime APIは24kHz, 16bit PCM, モノラル）
-    "sample_rate": 24000,
+    # オーディオ設定
+    "api_sample_rate": 24000,  # Realtime APIは24kHz, 16bit PCM, モノラル
+    "input_sample_rate": 44100,  # USBマイク用（44.1kHz）
+    "output_sample_rate": 48000,  # USBスピーカー用（48kHz）
     "channels": 1,
-    "chunk_size": 1024,  # 約42ms @ 24kHz
-    "output_sample_rate": 48000,  # USBスピーカー用にリサンプリング
+    "chunk_size": 1024,
 
     # デバイス設定
     "input_device_index": None,
@@ -149,7 +150,7 @@ class RealtimeAudioHandler:
         self.input_stream = self.audio.open(
             format=pyaudio.paInt16,
             channels=CONFIG["channels"],
-            rate=CONFIG["sample_rate"],
+            rate=CONFIG["input_sample_rate"],  # USBマイクは44.1kHz
             input=True,
             input_device_index=input_device,
             frames_per_buffer=CONFIG["chunk_size"]
@@ -167,11 +168,17 @@ class RealtimeAudioHandler:
             print("🎤 マイク入力停止")
 
     def read_audio_chunk(self):
-        """マイクから音声チャンクを読み取り"""
+        """マイクから音声チャンクを読み取り（24kHzにリサンプリング）"""
         if self.input_stream and self.is_recording:
             try:
                 data = self.input_stream.read(CONFIG["chunk_size"], exception_on_overflow=False)
-                return data
+                # 44.1kHz → 24kHz にリサンプリング
+                resampled = resample_audio(
+                    data,
+                    CONFIG["input_sample_rate"],
+                    CONFIG["api_sample_rate"]
+                )
+                return resampled
             except Exception as e:
                 print(f"音声読み取りエラー: {e}")
         return None
@@ -209,7 +216,7 @@ class RealtimeAudioHandler:
                 # 24kHz → 48kHz にリサンプリング
                 resampled = resample_audio(
                     audio_data,
-                    CONFIG["sample_rate"],
+                    CONFIG["api_sample_rate"],
                     CONFIG["output_sample_rate"]
                 )
                 self.output_stream.write(resampled)
