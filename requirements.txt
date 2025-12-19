@@ -1,0 +1,14 @@
+# OpenAI Realtime API
+openai>=1.0.0
+websockets>=12.0
+
+# Audio processing
+pyaudio
+numpy
+
+# Environment
+python-dotenv
+
+# Optional: GPIO (Raspberry Pi only)
+# gpiozero
+# lgpio

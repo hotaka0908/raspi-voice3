@@ -18,7 +18,7 @@ OpenAI Realtime API (`gpt-realtime-mini-2025-12-15`) を使用してリアルタ
 
 ## 使用モデル
 
-- `gpt-realtime-mini-2025-12-15` - リアルタイム音声対話
+- `gpt-4o-realtime-preview-2024-12-17` - リアルタイム音声対話
 
 ## ハードウェア
 
@@ -48,15 +48,42 @@ mkdir -p ~/.ai-necklace
 echo "OPENAI_API_KEY=sk-your-api-key" > ~/.ai-necklace/.env
 ```
 
+## 使い方
+
+### 基本操作
+
+1. ボタンを押す → 録音開始（AIが話していたら割り込み）
+2. 話す（ボタンを押している間）
+3. ボタンを離す → 録音終了 → AI応答開始（リアルタイムで再生）
+
+### 手動実行
+
+```bash
+cd ~/ai-necklace-realtime
+source venv/bin/activate
+python ai_necklace_realtime.py
+```
+
+### サービスとして実行
+
+```bash
+sudo cp ai-necklace.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable ai-necklace
+sudo systemctl start ai-necklace
+```
+
 ## 実装状況
 
-- [ ] 基本的なWebSocket接続
-- [ ] 音声入力ストリーミング
-- [ ] 音声出力ストリーミング
-- [ ] 割り込み処理
-- [ ] VAD（Voice Activity Detection）
+- [x] 基本的なWebSocket接続
+- [x] 音声入力ストリーミング
+- [x] 音声出力ストリーミング
+- [x] 割り込み処理（ボタン押下でAI応答を中断）
+- [x] 24kHz → 48kHz リサンプリング（USBスピーカー対応）
+- [ ] VAD（Voice Activity Detection）自動モード
 - [ ] Gmail機能の統合
 - [ ] アラーム機能の統合
+- [ ] カメラ機能の統合
 
 ## ライセンス
 

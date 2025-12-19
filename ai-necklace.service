@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Necklace Voice Assistant
+Description=AI Necklace Realtime Voice Assistant
 After=network-online.target sound.target
 Wants=network-online.target sound.target
 # Wi-Fi接続が確立されるまで待機
@@ -9,9 +9,9 @@ Requires=network-online.target
 Type=simple
 User=hotaka
 Group=hotaka
-WorkingDirectory=/home/hotaka/ai-necklace
-Environment=PATH=/home/hotaka/ai-necklace/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/home/hotaka/ai-necklace/venv/bin/python3 /home/hotaka/ai-necklace/ai_necklace.py
+WorkingDirectory=/home/hotaka/ai-necklace-realtime
+Environment=PATH=/home/hotaka/ai-necklace-realtime/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/hotaka/ai-necklace-realtime/venv/bin/python3 /home/hotaka/ai-necklace-realtime/ai_necklace_realtime.py
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=300
