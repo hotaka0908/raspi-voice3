@@ -18,3 +18,4 @@ token.json
 # Logs
 *.log
 docs/firebase-config.js
+docs/.firebase/

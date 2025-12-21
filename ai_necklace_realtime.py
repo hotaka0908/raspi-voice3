@@ -661,7 +661,7 @@ def voice_send_photo_func():
             photo_data = f.read()
 
         # Firebaseに送信
-        if firebase_messenger.send_photo_message(photo_data, text="写真を送りました"):
+        if firebase_messenger.send_photo_message(photo_data):
             print("✅ 写真をスマホに送信しました")
             return "写真をスマホに送信しました。"
         else:
@@ -678,20 +678,25 @@ def voice_send_photo_func():
 def record_voice_message_sync():
     """
     音声メッセージ用の同期録音（raspi-voice2と同じ方式）
-    専用のオーディオストリームを開いて、ボタンが離されるまで録音
+    グローバルオーディオハンドラのPyAudioインスタンスを再利用
     """
-    global running, button
+    global running, button, global_audio_handler
 
-    audio = pyaudio.PyAudio()
+    if not global_audio_handler:
+        print("❌ オーディオハンドラが初期化されていません")
+        return None
+
+    # グローバルハンドラのPyAudioインスタンスを使用
+    audio = global_audio_handler.audio
     input_device = find_audio_device(audio, "input")
 
     if input_device is None:
         print("❌ 入力デバイスが見つかりません")
-        audio.terminate()
         return None
 
     print("🎤 音声メッセージ録音中... (ボタンを離すと停止)")
 
+    stream = None
     try:
         stream = audio.open(
             format=pyaudio.paInt16,
@@ -703,45 +708,50 @@ def record_voice_message_sync():
         )
     except Exception as e:
         print(f"❌ ストリーム開始エラー: {e}")
-        audio.terminate()
         return None
 
     frames = []
     max_chunks = int(CONFIG["input_sample_rate"] / CONFIG["chunk_size"] * 60)  # 最大60秒
     start_time = time.time()
 
-    while True:
-        if not running:
-            break
+    try:
+        while True:
+            if not running:
+                break
 
-        # タイムアウト (60秒)
-        if time.time() - start_time > 60:
-            print("録音タイムアウト")
-            break
+            # タイムアウト (60秒)
+            if time.time() - start_time > 60:
+                print("録音タイムアウト")
+                break
 
-        # ボタンが離されたら終了
-        if button and not button.is_pressed:
-            print("ボタンが離されました、録音終了")
-            break
+            # ボタンが離されたら終了
+            if button and not button.is_pressed:
+                print("ボタンが離されました、録音終了")
+                break
 
-        if len(frames) >= max_chunks:
-            print("最大録音時間に達しました")
-            break
+            if len(frames) >= max_chunks:
+                print("最大録音時間に達しました")
+                break
 
-        try:
-            available = stream.get_read_available()
-            if available >= CONFIG["chunk_size"]:
-                data = stream.read(CONFIG["chunk_size"], exception_on_overflow=False)
-                frames.append(data)
-            else:
-                time.sleep(0.001)
-        except Exception as e:
-            print(f"録音中にエラー: {e}")
-            break
-
-    stream.stop_stream()
-    stream.close()
-    audio.terminate()
+            try:
+                available = stream.get_read_available()
+                if available >= CONFIG["chunk_size"]:
+                    data = stream.read(CONFIG["chunk_size"], exception_on_overflow=False)
+                    frames.append(data)
+                else:
+                    time.sleep(0.001)
+            except Exception as e:
+                print(f"録音中にエラー: {e}")
+                break
+    finally:
+        # 必ずストリームを閉じる
+        if stream:
+            try:
+                stream.stop_stream()
+                stream.close()
+                print("🎤 音声メッセージ録音ストリーム終了")
+            except Exception as e:
+                print(f"ストリーム終了エラー: {e}")
 
     if len(frames) < 5:
         print("録音が短すぎます")
@@ -909,6 +919,8 @@ def check_alarms_and_notify():
             now = datetime.now()
             current_time = now.strftime("%H:%M")
 
+            alarms_to_delete = []  # 削除するアラームのIDリスト
+
             for alarm in alarms:
                 if not alarm.get("enabled", True):
                     continue
@@ -937,6 +949,16 @@ def check_alarms_and_notify():
                             )
                         except Exception as e:
                             print(f"アラーム通知エラー: {e}")
+
+                    # 発動したアラームを削除リストに追加
+                    alarms_to_delete.append(alarm_id)
+
+            # 発動したアラームを削除
+            if alarms_to_delete:
+                for alarm_id in alarms_to_delete:
+                    alarms[:] = [a for a in alarms if a['id'] != alarm_id]
+                    print(f"🗑️ アラーム削除: ID {alarm_id}")
+                save_alarms()
 
             # 古いトリガー記録をクリア（1分以上前のもの）
             keys_to_remove = [k for k in last_triggered if not k.endswith(current_time)]
@@ -1490,8 +1512,10 @@ class RealtimeClient:
                 await self.handle_event(event)
 
         except websockets.exceptions.ConnectionClosed:
-            print("⚠️ WebSocket接続が閉じられました")
+            print("⚠️ WebSocket接続が閉じられました - 再起動します")
             self.is_connected = False
+            global running
+            running = False  # プログラムを終了させてsystemdに再起動を任せる
         except Exception as e:
             print(f"⚠️ 受信エラー: {e}")
 
@@ -1532,7 +1556,12 @@ class RealtimeClient:
             except:
                 arguments = {}
 
-            result = execute_tool(name, arguments)
+            # 長時間かかるツールは別スレッドで実行（イベントループをブロックしない）
+            if name in ["voice_send_photo", "camera_capture", "gmail_send_photo"]:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, lambda: execute_tool(name, arguments))
+            else:
+                result = execute_tool(name, arguments)
             await self.send_tool_result(call_id, result)
 
         elif event_type == "response.done":
@@ -1567,11 +1596,12 @@ async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioH
                     print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
 
                     if voice_message_mode:
-                        # 音声メッセージモード: 専用の同期録音を使用
-                        print("🔴 音声メッセージ録音開始（同期モード）")
+                        # 音声メッセージモード: 別スレッドで同期録音を実行
+                        print("🔴 音声メッセージ録音開始（スレッドモード）")
                         is_recording = True
-                        # 同期録音＆送信を実行（ボタンが離されるまでブロック）
-                        success = send_recorded_voice_message()
+                        # スレッドで実行してイベントループをブロックしない
+                        loop = asyncio.get_event_loop()
+                        success = await loop.run_in_executor(None, send_recorded_voice_message)
                         is_recording = False
                         # 結果を音声で通知
                         if success:
