@@ -90,6 +90,43 @@ class FirebaseVoiceMessenger:
             print(f"アップロードエラー: {response.status_code} - {response.text}")
             return None
 
+    def upload_photo(self, photo_data: bytes, filename: str = None) -> str:
+        """
+        写真データをFirebase Storageにアップロード
+
+        Args:
+            photo_data: 写真バイナリデータ
+            filename: ファイル名（省略時は自動生成）
+
+        Returns:
+            ダウンロードURL
+        """
+        if filename is None:
+            timestamp = int(time.time() * 1000)
+            filename = f"{self.device_id}_{timestamp}.jpg"
+
+        # Firebase Storage REST API エンドポイント
+        storage_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o"
+
+        # ファイルパスをURLエンコード（audioフォルダを使用）
+        encoded_path = requests.utils.quote(f"audio/{filename}", safe='')
+        upload_url = f"{storage_url}/{encoded_path}"
+
+        headers = {
+            "Content-Type": "image/jpeg",
+        }
+
+        response = requests.post(upload_url, headers=headers, data=photo_data)
+
+        if response.status_code == 200:
+            # ダウンロードURLを生成
+            download_url = f"{storage_url}/{encoded_path}?alt=media"
+            print(f"写真アップロード成功: {filename}")
+            return download_url
+        else:
+            print(f"写真アップロードエラー: {response.status_code} - {response.text}")
+            return None
+
     def send_message(self, audio_data: bytes, text: str = None) -> bool:
         """
         音声メッセージを送信
@@ -126,6 +163,48 @@ class FirebaseVoiceMessenger:
 
         if response.status_code == 200:
             print(f"メッセージ送信成功: {filename}")
+            return True
+        else:
+            print(f"DB登録エラー: {response.status_code} - {response.text}")
+            return False
+
+    def send_photo_message(self, photo_data: bytes, text: str = None) -> bool:
+        """
+        写真メッセージを送信
+
+        Args:
+            photo_data: 写真バイナリデータ
+            text: テキスト（オプション）
+
+        Returns:
+            成功したかどうか
+        """
+        # 写真をアップロード
+        timestamp = int(time.time() * 1000)
+        filename = f"{self.device_id}_{timestamp}.jpg"
+        photo_url = self.upload_photo(photo_data, filename)
+
+        if not photo_url:
+            return False
+
+        # メタデータをRealtime Databaseに登録
+        message_data = {
+            "from": self.device_id,
+            "photo_url": photo_url,
+            "filename": filename,
+            "timestamp": timestamp,
+            "played": False,
+            "type": "photo",
+        }
+
+        if text:
+            message_data["text"] = text
+
+        db_url = f"{self.db_url}/messages.json"
+        response = requests.post(db_url, json=message_data)
+
+        if response.status_code == 200:
+            print(f"写真メッセージ送信成功: {filename}")
             return True
         else:
             print(f"DB登録エラー: {response.status_code} - {response.text}")

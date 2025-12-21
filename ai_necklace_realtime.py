@@ -126,6 +126,7 @@ CONFIG = {
 - camera_capture: カメラで撮影して画像を説明
 - gmail_send_photo: 写真を撮影してメール送信
 - voice_send: スマホに音声メッセージを送信
+- voice_send_photo: 写真を撮影してスマホに送信
 
 ユーザーが「メールを確認」と言ったらgmail_listを使用。
 ユーザーが「写真を撮って」「何が見える？」と言ったらcamera_captureを使用。
@@ -635,6 +636,45 @@ def voice_send_func(message_text=None):
     return "【録音待機中】ユーザーに「ボタンを押しながらメッセージを録音してください」と伝えてください。"
 
 
+def voice_send_photo_func():
+    """写真を撮影してスマホに送信"""
+    global firebase_messenger
+
+    if not firebase_messenger:
+        return "Firebase Voice Messengerが初期化されていません。"
+
+    print("📷 写真を撮影してスマホに送信中...")
+
+    try:
+        # カメラで撮影
+        image_path = "/tmp/ai_necklace_photo_send.jpg"
+        result = subprocess.run(
+            ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
+            capture_output=True, timeout=10
+        )
+
+        if result.returncode != 0:
+            return f"写真の撮影に失敗しました: {result.stderr.decode()}"
+
+        # 写真データを読み込み
+        with open(image_path, "rb") as f:
+            photo_data = f.read()
+
+        # Firebaseに送信
+        if firebase_messenger.send_photo_message(photo_data, text="写真を送りました"):
+            print("✅ 写真をスマホに送信しました")
+            return "写真をスマホに送信しました。"
+        else:
+            return "写真の送信に失敗しました。"
+
+    except subprocess.TimeoutExpired:
+        return "カメラの撮影がタイムアウトしました"
+    except FileNotFoundError:
+        return "カメラが見つかりません"
+    except Exception as e:
+        return f"写真送信エラー: {str(e)}"
+
+
 def record_voice_message_sync():
     """
     音声メッセージ用の同期録音（raspi-voice2と同じ方式）
@@ -1055,6 +1095,8 @@ def execute_tool(tool_name, arguments):
         )
     elif tool_name == "voice_send":
         return voice_send_func()
+    elif tool_name == "voice_send_photo":
+        return voice_send_photo_func()
     else:
         return f"不明なツール: {tool_name}"
 
@@ -1173,6 +1215,15 @@ TOOLS = [
         "type": "function",
         "name": "voice_send",
         "description": "スマホに音声メッセージを送信します。「スマホにメッセージを送って」「ボイスメッセージを送りたい」などと言われたら使用。ユーザーの録音した声がそのまま送信されます。",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "type": "function",
+        "name": "voice_send_photo",
+        "description": "写真を撮影してスマホに送信します。「スマホに写真を送って」「写真を撮ってスマホに送って」などと言われたら使用。",
         "parameters": {
             "type": "object",
             "properties": {}
