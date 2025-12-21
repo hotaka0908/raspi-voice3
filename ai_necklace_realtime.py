@@ -1503,6 +1503,7 @@ class RealtimeClient:
         print(f"📤 ツール結果送信: {result[:100]}...")
 
     async def receive_messages(self):
+        global running
         try:
             async for message in self.ws:
                 if not running:
@@ -1514,7 +1515,6 @@ class RealtimeClient:
         except websockets.exceptions.ConnectionClosed:
             print("⚠️ WebSocket接続が閉じられました - 再起動します")
             self.is_connected = False
-            global running
             running = False  # プログラムを終了させてsystemdに再起動を任せる
         except Exception as e:
             print(f"⚠️ 受信エラー: {e}")
