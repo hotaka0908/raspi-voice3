@@ -1645,6 +1645,7 @@ class RealtimeClient:
         self.is_responding = False
         self.pending_tool_calls = {}
         self.loop = None  # イベントループ参照（スレッド間通信用）
+        self.conversation_item_ids = []  # 会話アイテムID追跡用
 
     async def connect(self):
         url = f"wss://api.openai.com/v1/realtime?model={CONFIG['model']}"
@@ -1761,6 +1762,13 @@ class RealtimeClient:
         elif event_type == "session.updated":
             print("📝 セッション更新完了")
 
+        elif event_type == "conversation.item.created":
+            # 会話アイテムIDを追跡
+            item = event.get("item", {})
+            item_id = item.get("id")
+            if item_id:
+                self.conversation_item_ids.append(item_id)
+
         elif event_type == "response.created":
             self.is_responding = True
 
@@ -1816,16 +1824,22 @@ class RealtimeClient:
             self.is_connected = False
             print("🔌 Realtime API切断")
 
-    async def reset_session(self):
-        """セッションをリセット（再接続）"""
-        print("🔄 セッションリセット...")
-        try:
-            if self.ws:
-                await self.ws.close()
-                self.is_connected = False
-            await self.connect()
-        except Exception as e:
-            print(f"❌ セッションリセットエラー: {e}")
+    async def clear_conversation(self):
+        """会話履歴をクリア（接続は維持）"""
+        if not self.conversation_item_ids:
+            return  # クリアするものがない
+
+        print(f"🧹 会話履歴クリア（{len(self.conversation_item_ids)}件）")
+        for item_id in self.conversation_item_ids:
+            try:
+                await self.ws.send(json.dumps({
+                    "type": "conversation.item.delete",
+                    "item_id": item_id
+                }))
+            except Exception as e:
+                pass  # 既に削除済みの場合などはスキップ
+
+        self.conversation_item_ids = []
 
 
 async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioHandler):
@@ -1836,8 +1850,8 @@ async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioH
         if CONFIG["use_button"] and button:
             if button.is_pressed:
                 if not is_recording:
-                    # 毎回セッションをリセット（クリーンな状態で会話開始）
-                    await client.reset_session()
+                    # 毎回会話履歴をクリア（クリーンな状態で会話開始）
+                    await client.clear_conversation()
 
                     # デバッグ: 現在のモードを表示
                     print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
