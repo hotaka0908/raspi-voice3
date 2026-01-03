@@ -243,34 +243,31 @@ class FirebaseVoiceMessenger:
         photo_url = f"{storage_url}/{encoded_path}?alt=media"
         print(f"ライフログ写真アップロード成功: lifelogs/{date}/{filename}")
 
-        # Firestore にメタデータを保存
-        # パス: lifelogs/{date}/photos/{docId}
-        project_id = FIREBASE_CONFIG["projectId"]
-        firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/lifelogs/{date}/photos"
-
+        # Realtime Database にメタデータを保存
+        # パス: lifelogs/{date}/{time_str}
         timestamp = int(time.time() * 1000)
         # HH:MM形式の時刻
         time_formatted = f"{time_str[:2]}:{time_str[2:4]}"
 
-        # Firestoreのドキュメント形式
+        # Realtime Database形式
         doc_data = {
-            "fields": {
-                "deviceId": {"stringValue": self.device_id},
-                "timestamp": {"integerValue": str(timestamp)},
-                "time": {"stringValue": time_formatted},
-                "photoUrl": {"stringValue": photo_url},
-                "analyzed": {"booleanValue": False},
-                "analysis": {"stringValue": ""}
-            }
+            "deviceId": self.device_id,
+            "timestamp": timestamp,
+            "time": time_formatted,
+            "photoUrl": photo_url,
+            "analyzed": False,
+            "analysis": ""
         }
 
-        response = requests.post(firestore_url, json=doc_data)
+        # Realtime Database REST API
+        db_url = f"{self.db_url}/lifelogs/{date}/{time_str}.json"
+        response = requests.put(db_url, json=doc_data)
 
         if response.status_code == 200:
             print(f"ライフログメタデータ保存成功: {date} {time_formatted}")
             return True
         else:
-            print(f"Firestoreエラー: {response.status_code} - {response.text}")
+            print(f"Realtime Databaseエラー: {response.status_code} - {response.text}")
             # Storageへのアップロードは成功しているので、部分的な成功とする
             return True
 
