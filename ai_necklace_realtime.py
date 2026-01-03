@@ -1176,8 +1176,8 @@ def gmail_send_photo_func(to=None, subject="写真を送ります", body=""):
 # ==================== ライフログ機能 ====================
 
 def capture_lifelog_photo():
-    """ライフログ用の写真を撮影して保存"""
-    global lifelog_photo_count, camera_lock
+    """ライフログ用の写真を撮影して保存（ローカル + Firebase）"""
+    global lifelog_photo_count, camera_lock, firebase_messenger
 
     # カメラロックを即座に試行（ユーザー操作を優先するため待機しない）
     if not camera_lock.acquire(blocking=False):
@@ -1209,6 +1209,19 @@ def capture_lifelog_photo():
             shutter_sound = generate_shutter_sound()
             if shutter_sound:
                 play_audio_direct(shutter_sound)
+
+            # Firebaseにアップロード（非同期的に実行、失敗してもローカル保存は成功とする）
+            if firebase_messenger:
+                try:
+                    with open(image_path, "rb") as f:
+                        photo_data = f.read()
+                    if firebase_messenger.upload_lifelog_photo(photo_data, today, timestamp):
+                        print(f"☁️ Firebaseアップロード成功")
+                    else:
+                        print(f"⚠️ Firebaseアップロード失敗（ローカルは保存済み）")
+                except Exception as e:
+                    print(f"⚠️ Firebaseアップロードエラー: {e}（ローカルは保存済み）")
+
             return True
         else:
             print(f"❌ ライフログ撮影失敗: {result.stderr.decode()}")

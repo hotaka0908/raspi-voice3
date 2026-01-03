@@ -210,6 +210,70 @@ class FirebaseVoiceMessenger:
             print(f"DB登録エラー: {response.status_code} - {response.text}")
             return False
 
+    def upload_lifelog_photo(self, photo_data: bytes, date: str, time_str: str) -> bool:
+        """
+        ライフログ写真をFirebaseにアップロード
+
+        Args:
+            photo_data: 写真バイナリデータ
+            date: 日付（YYYY-MM-DD形式）
+            time_str: 時刻（HHMMSS形式）
+
+        Returns:
+            成功したかどうか
+        """
+        # Firebase Storage にアップロード
+        # パス: lifelogs/{date}/{time}.jpg
+        filename = f"{time_str}.jpg"
+        storage_url = f"https://firebasestorage.googleapis.com/v0/b/{self.storage_bucket}/o"
+        encoded_path = requests.utils.quote(f"lifelogs/{date}/{filename}", safe='')
+        upload_url = f"{storage_url}/{encoded_path}"
+
+        headers = {
+            "Content-Type": "image/jpeg",
+        }
+
+        response = requests.post(upload_url, headers=headers, data=photo_data)
+
+        if response.status_code != 200:
+            print(f"ライフログ写真アップロードエラー: {response.status_code} - {response.text}")
+            return False
+
+        # ダウンロードURLを生成
+        photo_url = f"{storage_url}/{encoded_path}?alt=media"
+        print(f"ライフログ写真アップロード成功: lifelogs/{date}/{filename}")
+
+        # Firestore にメタデータを保存
+        # パス: lifelogs/{date}/photos/{docId}
+        project_id = FIREBASE_CONFIG["projectId"]
+        firestore_url = f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/lifelogs/{date}/photos"
+
+        timestamp = int(time.time() * 1000)
+        # HH:MM形式の時刻
+        time_formatted = f"{time_str[:2]}:{time_str[2:4]}"
+
+        # Firestoreのドキュメント形式
+        doc_data = {
+            "fields": {
+                "deviceId": {"stringValue": self.device_id},
+                "timestamp": {"integerValue": str(timestamp)},
+                "time": {"stringValue": time_formatted},
+                "photoUrl": {"stringValue": photo_url},
+                "analyzed": {"booleanValue": False},
+                "analysis": {"stringValue": ""}
+            }
+        }
+
+        response = requests.post(firestore_url, json=doc_data)
+
+        if response.status_code == 200:
+            print(f"ライフログメタデータ保存成功: {date} {time_formatted}")
+            return True
+        else:
+            print(f"Firestoreエラー: {response.status_code} - {response.text}")
+            # Storageへのアップロードは成功しているので、部分的な成功とする
+            return True
+
     def get_messages(self, limit: int = 10, unplayed_only: bool = False) -> list:
         """
         メッセージ一覧を取得
