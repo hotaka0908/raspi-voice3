@@ -167,10 +167,6 @@ firebase_messenger = None
 voice_message_mode = False  # 音声メッセージ録音モード
 voice_message_buffer = []   # 録音バッファ
 
-# セッション管理
-last_conversation_time = None  # 最後の会話終了時刻
-SESSION_TIMEOUT = 30  # セッションタイムアウト（秒）
-
 # ライフログ関連
 lifelog_enabled = False
 lifelog_thread = None
@@ -1648,7 +1644,6 @@ class RealtimeClient:
         self.is_responding = False
         self.pending_tool_calls = {}
         self.loop = None  # イベントループ参照（スレッド間通信用）
-        self.conversation_item_ids = []  # 会話アイテムID追跡用
 
     async def connect(self):
         url = f"wss://api.openai.com/v1/realtime?model={CONFIG['model']}"
@@ -1765,13 +1760,6 @@ class RealtimeClient:
         elif event_type == "session.updated":
             print("📝 セッション更新完了")
 
-        elif event_type == "conversation.item.created":
-            # 会話アイテムIDを追跡
-            item = event.get("item", {})
-            item_id = item.get("id")
-            if item_id:
-                self.conversation_item_ids.append(item_id)
-
         elif event_type == "response.created":
             self.is_responding = True
 
@@ -1809,9 +1797,7 @@ class RealtimeClient:
             await self.send_tool_result(call_id, result)
 
         elif event_type == "response.done":
-            global last_conversation_time
             self.is_responding = False
-            last_conversation_time = time.time()
             print("✅ 応答完了")
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
@@ -1829,39 +1815,14 @@ class RealtimeClient:
             self.is_connected = False
             print("🔌 Realtime API切断")
 
-    async def clear_conversation(self):
-        """会話履歴をクリア（接続は維持）"""
-        if not self.conversation_item_ids:
-            return  # クリアするものがない
-
-        print(f"🧹 会話履歴クリア（{len(self.conversation_item_ids)}件）")
-        for item_id in self.conversation_item_ids:
-            try:
-                await self.ws.send(json.dumps({
-                    "type": "conversation.item.delete",
-                    "item_id": item_id
-                }))
-            except Exception as e:
-                pass  # 既に削除済みの場合などはスキップ
-
-        self.conversation_item_ids = []
-
-
 async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioHandler):
     """音声入力ループ"""
-    global running, button, is_recording, voice_message_mode, last_conversation_time
+    global running, button, is_recording, voice_message_mode
 
     while running:
         if CONFIG["use_button"] and button:
             if button.is_pressed:
                 if not is_recording:
-                    # タイムアウトチェック（30秒無操作でクリア）
-                    if last_conversation_time is not None:
-                        elapsed = time.time() - last_conversation_time
-                        if elapsed >= SESSION_TIMEOUT:
-                            print(f"⏰ {SESSION_TIMEOUT}秒経過 - 会話履歴クリア")
-                            await client.clear_conversation()
-
                     # デバッグ: 現在のモードを表示
                     print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
 
