@@ -1736,8 +1736,6 @@ class RealtimeClient:
             }
         }
         await self.ws.send(json.dumps(message))
-        # 音声再生が完了するまで少し待つ
-        await asyncio.sleep(0.5)
         await self.ws.send(json.dumps({"type": "response.create"}))
         print(f"📤 ツール結果送信: {result[:100]}...")
 
@@ -1801,11 +1799,22 @@ class RealtimeClient:
                 result = await loop.run_in_executor(None, lambda: execute_tool(name, arguments))
             else:
                 result = execute_tool(name, arguments)
-            await self.send_tool_result(call_id, result)
+
+            # ツール結果をペンディングに保存（response.done後に送信）
+            self.pending_tool_calls[call_id] = result
+            print(f"📥 ツール結果を保留: {name}")
 
         elif event_type == "response.done":
             self.is_responding = False
             print("✅ 応答完了")
+
+            # ペンディング中のツール結果を送信
+            if self.pending_tool_calls:
+                # 音声再生が完了するまで少し待つ
+                await asyncio.sleep(0.3)
+                for call_id, result in self.pending_tool_calls.items():
+                    await self.send_tool_result(call_id, result)
+                self.pending_tool_calls = {}
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
             transcript = event.get("transcript", "")
