@@ -109,6 +109,10 @@ CONFIG = {
     # アラーム設定
     "alarm_file_path": os.path.expanduser("~/.ai-necklace/alarms.json"),
 
+    # ライフログ設定
+    "lifelog_dir": os.path.expanduser("~/lifelog"),
+    "lifelog_interval": 300,  # 5分（秒）
+
     # システムプロンプト
     "instructions": """あなたは親切なAIアシスタントです。
 ユーザーの質問に簡潔に答えてください。
@@ -127,11 +131,17 @@ CONFIG = {
 - gmail_send_photo: 写真を撮影してメール送信
 - voice_send: スマホに音声メッセージを送信
 - voice_send_photo: 写真を撮影してスマホに送信
+- lifelog_start: ライフログ撮影を開始
+- lifelog_stop: ライフログ撮影を停止
+- lifelog_status: ライフログのステータス確認
 
 ユーザーが「メールを確認」と言ったらgmail_listを使用。
 ユーザーが「写真を撮って」「何が見える？」と言ったらcamera_captureを使用。
 ユーザーが「アラームをセット」と言ったらalarm_setを使用。
 ユーザーが「スマホにメッセージを送って」「ボイスメッセージを送りたい」と言ったらvoice_sendを使用。
+ユーザーが「ライフログ開始」「ライフログを始めて」と言ったらlifelog_startを使用。
+ユーザーが「ライフログ停止」「ライフログを止めて」と言ったらlifelog_stopを使用。
+ユーザーが「今日何枚撮った？」「ライフログの状態」と言ったらlifelog_statusを使用。
 
 重要: voice_sendツールを呼び出した後は、ユーザーが録音するまで「送信しました」とは言わないでください。
 voice_sendは録音モードを開始するだけで、実際の送信はユーザーがボタンを押して録音した後に行われます。
@@ -156,6 +166,14 @@ alarm_next_id = 1
 firebase_messenger = None
 voice_message_mode = False  # 音声メッセージ録音モード
 voice_message_buffer = []   # 録音バッファ
+
+# ライフログ関連
+lifelog_enabled = False
+lifelog_thread = None
+lifelog_photo_count = 0  # 今日の撮影枚数
+
+# カメラ排他制御用ロック
+camera_lock = threading.Lock()
 
 # グローバルオーディオハンドラ（スマホからの音声再生用）
 global_audio_handler = None
@@ -638,7 +656,7 @@ def voice_send_func(message_text=None):
 
 def voice_send_photo_func():
     """写真を撮影してスマホに送信"""
-    global firebase_messenger
+    global firebase_messenger, camera_lock
 
     if not firebase_messenger:
         return "Firebase Voice Messengerが初期化されていません。"
@@ -646,21 +664,22 @@ def voice_send_photo_func():
     print("📷 写真を撮影してスマホに送信中...")
 
     try:
-        # カメラで撮影
-        image_path = "/tmp/ai_necklace_photo_send.jpg"
-        result = subprocess.run(
-            ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
-            capture_output=True, timeout=10
-        )
+        # カメラロックを取得して撮影
+        with camera_lock:
+            image_path = "/tmp/ai_necklace_photo_send.jpg"
+            result = subprocess.run(
+                ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
+                capture_output=True, timeout=10
+            )
 
-        if result.returncode != 0:
-            return f"写真の撮影に失敗しました: {result.stderr.decode()}"
+            if result.returncode != 0:
+                return f"写真の撮影に失敗しました: {result.stderr.decode()}"
 
-        # 写真データを読み込み
-        with open(image_path, "rb") as f:
-            photo_data = f.read()
+            # 写真データを読み込み
+            with open(image_path, "rb") as f:
+                photo_data = f.read()
 
-        # Firebaseに送信
+        # ロック解放後にFirebaseに送信
         if firebase_messenger.send_photo_message(photo_data):
             print("✅ 写真をスマホに送信しました")
             return "写真をスマホに送信しました。"
@@ -983,25 +1002,36 @@ def start_alarm_thread():
 
 def camera_capture_func(prompt="この画像に何が写っていますか？簡潔に説明してください。"):
     """カメラで撮影してGPT-4oで画像を解析"""
-    global openai_client
+    global openai_client, camera_lock
 
-    print("📷 カメラで撮影中...")
+    # カメラロックを取得
+    with camera_lock:
+        print("📷 カメラで撮影中...")
+
+        try:
+            image_path = "/tmp/ai_necklace_capture.jpg"
+            result = subprocess.run(
+                ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
+                capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode != 0:
+                return f"カメラでの撮影に失敗しました: {result.stderr}"
+
+            with open(image_path, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode("utf-8")
+
+        except subprocess.TimeoutExpired:
+            return "カメラの撮影がタイムアウトしました"
+        except FileNotFoundError:
+            return "カメラが見つかりません"
+        except Exception as e:
+            return f"カメラエラー: {str(e)}"
+
+    # ロック解放後に画像解析（時間がかかるのでロック外で実行）
+    print("🔍 画像を解析中...")
 
     try:
-        image_path = "/tmp/ai_necklace_capture.jpg"
-        result = subprocess.run(
-            ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
-            capture_output=True, text=True, timeout=10
-        )
-
-        if result.returncode != 0:
-            return f"カメラでの撮影に失敗しました: {result.stderr}"
-
-        with open(image_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-
-        print("🔍 画像を解析中...")
-
         response = openai_client.chat.completions.create(
             model="gpt-4o",
             messages=[{
@@ -1016,17 +1046,13 @@ def camera_capture_func(prompt="この画像に何が写っていますか？簡
 
         return response.choices[0].message.content
 
-    except subprocess.TimeoutExpired:
-        return "カメラの撮影がタイムアウトしました"
-    except FileNotFoundError:
-        return "カメラが見つかりません"
     except Exception as e:
-        return f"カメラエラー: {str(e)}"
+        return f"画像解析エラー: {str(e)}"
 
 
 def gmail_send_photo_func(to=None, subject="写真を送ります", body=""):
     """写真を撮影してメール送信"""
-    global gmail_service, last_email_list
+    global gmail_service, last_email_list, camera_lock
 
     if not gmail_service:
         return "Gmail機能が初期化されていません"
@@ -1039,22 +1065,26 @@ def gmail_send_photo_func(to=None, subject="写真を送ります", body=""):
         to = match.group(1) if match else to_raw.strip()
 
     try:
-        print("📷 写真を撮影中...")
-        image_path = "/tmp/ai_necklace_capture.jpg"
-        result = subprocess.run(
-            ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
-            capture_output=True, text=True, timeout=10
-        )
-        if result.returncode != 0:
-            return f"写真の撮影に失敗しました"
+        # カメラロックを取得して撮影
+        with camera_lock:
+            print("📷 写真を撮影中...")
+            image_path = "/tmp/ai_necklace_capture.jpg"
+            result = subprocess.run(
+                ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode != 0:
+                return f"写真の撮影に失敗しました"
 
+            with open(image_path, 'rb') as f:
+                img_data = f.read()
+
+        # ロック解放後にメール送信
         message = MIMEMultipart()
         message['to'] = to
         message['subject'] = subject
         message.attach(MIMEText(body or "写真を送ります。", 'plain'))
 
-        with open(image_path, 'rb') as f:
-            img_data = f.read()
         img_part = MIMEBase('image', 'jpeg')
         img_part.set_payload(img_data)
         encoders.encode_base64(img_part)
@@ -1070,6 +1100,138 @@ def gmail_send_photo_func(to=None, subject="写真を送ります", body=""):
 
     except Exception as e:
         return f"写真付きメール送信エラー: {str(e)}"
+
+
+# ==================== ライフログ機能 ====================
+
+def capture_lifelog_photo():
+    """ライフログ用の写真を撮影して保存"""
+    global lifelog_photo_count, camera_lock
+
+    # カメラロックを即座に試行（ユーザー操作を優先するため待機しない）
+    if not camera_lock.acquire(blocking=False):
+        print("⚠️ ライフログ撮影スキップ: カメラ使用中（ユーザー操作優先）")
+        return False
+
+    try:
+        # 今日の日付でディレクトリを作成
+        today = datetime.now().strftime("%Y-%m-%d")
+        lifelog_dir = os.path.join(CONFIG["lifelog_dir"], today)
+        os.makedirs(lifelog_dir, exist_ok=True)
+
+        # タイムスタンプ付きのファイル名
+        timestamp = datetime.now().strftime("%H%M%S")
+        filename = f"{timestamp}.jpg"
+        image_path = os.path.join(lifelog_dir, filename)
+
+        # カメラで撮影
+        result = subprocess.run(
+            ["rpicam-still", "-o", image_path, "-t", "500", "--width", "1280", "--height", "960"],
+            capture_output=True, timeout=10
+        )
+
+        if result.returncode == 0:
+            lifelog_photo_count += 1
+            print(f"📸 ライフログ撮影: {image_path} (今日{lifelog_photo_count}枚目)")
+            return True
+        else:
+            print(f"❌ ライフログ撮影失敗: {result.stderr.decode()}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        print("❌ ライフログ撮影タイムアウト")
+        return False
+    except Exception as e:
+        print(f"❌ ライフログ撮影エラー: {e}")
+        return False
+    finally:
+        camera_lock.release()
+
+
+def lifelog_thread_func():
+    """ライフログ撮影のバックグラウンドスレッド"""
+    global running, lifelog_enabled, lifelog_photo_count
+
+    last_date = datetime.now().strftime("%Y-%m-%d")
+    retry_interval = 30  # リトライ間隔（秒）
+
+    while running:
+        if lifelog_enabled:
+            # 日付が変わったらカウントをリセット
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            if current_date != last_date:
+                lifelog_photo_count = 0
+                last_date = current_date
+                print(f"📅 日付変更: ライフログカウントをリセット")
+
+            # 撮影
+            success = capture_lifelog_photo()
+
+            # 撮影成功なら通常間隔、スキップなら30秒後にリトライ
+            if success:
+                wait_time = CONFIG["lifelog_interval"]
+            else:
+                wait_time = retry_interval
+                print(f"🔄 {retry_interval}秒後にリトライします")
+        else:
+            wait_time = CONFIG["lifelog_interval"]
+
+        # 次の撮影まで待機（1秒ごとにチェックして停止に素早く対応）
+        for _ in range(wait_time):
+            if not running or not lifelog_enabled:
+                break
+            time.sleep(1)
+
+
+def start_lifelog_thread():
+    """ライフログスレッドを開始"""
+    global lifelog_thread
+    if lifelog_thread is None or not lifelog_thread.is_alive():
+        lifelog_thread = threading.Thread(target=lifelog_thread_func, daemon=True)
+        lifelog_thread.start()
+        print("📷 ライフログスレッド開始")
+
+
+def lifelog_start_func():
+    """ライフログ撮影を開始"""
+    global lifelog_enabled
+
+    if lifelog_enabled:
+        return "ライフログは既に動作中です。"
+
+    lifelog_enabled = True
+    start_lifelog_thread()
+
+    interval_min = CONFIG["lifelog_interval"] // 60
+    return f"ライフログを開始しました。{interval_min}分ごとに自動撮影します。"
+
+
+def lifelog_stop_func():
+    """ライフログ撮影を停止"""
+    global lifelog_enabled
+
+    if not lifelog_enabled:
+        return "ライフログは動作していません。"
+
+    lifelog_enabled = False
+    return "ライフログを停止しました。"
+
+
+def lifelog_status_func():
+    """ライフログのステータスを取得"""
+    global lifelog_enabled, lifelog_photo_count
+
+    status = "動作中" if lifelog_enabled else "停止中"
+    today = datetime.now().strftime("%Y-%m-%d")
+    lifelog_dir = os.path.join(CONFIG["lifelog_dir"], today)
+
+    # 実際のファイル数をカウント
+    actual_count = 0
+    if os.path.exists(lifelog_dir):
+        actual_count = len([f for f in os.listdir(lifelog_dir) if f.endswith('.jpg')])
+
+    interval_min = CONFIG["lifelog_interval"] // 60
+    return f"ライフログは{status}です。今日は{actual_count}枚撮影しました。撮影間隔は{interval_min}分です。"
 
 
 # ==================== ツール実行 ====================
@@ -1119,6 +1281,12 @@ def execute_tool(tool_name, arguments):
         return voice_send_func()
     elif tool_name == "voice_send_photo":
         return voice_send_photo_func()
+    elif tool_name == "lifelog_start":
+        return lifelog_start_func()
+    elif tool_name == "lifelog_stop":
+        return lifelog_stop_func()
+    elif tool_name == "lifelog_status":
+        return lifelog_status_func()
     else:
         return f"不明なツール: {tool_name}"
 
@@ -1246,6 +1414,33 @@ TOOLS = [
         "type": "function",
         "name": "voice_send_photo",
         "description": "写真を撮影してスマホに送信します。「スマホに写真を送って」「写真を撮ってスマホに送って」などと言われたら使用。",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "type": "function",
+        "name": "lifelog_start",
+        "description": "ライフログ撮影を開始します。「ライフログ開始」「ライフログを始めて」「定期撮影を開始」などと言われたら使用。5分ごとに自動で写真を撮影して保存します。",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "type": "function",
+        "name": "lifelog_stop",
+        "description": "ライフログ撮影を停止します。「ライフログ停止」「ライフログを止めて」「定期撮影を停止」などと言われたら使用。",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "type": "function",
+        "name": "lifelog_status",
+        "description": "ライフログのステータスを確認します。「今日何枚撮った？」「ライフログの状態」「撮影枚数を教えて」などと言われたら使用。",
         "parameters": {
             "type": "object",
             "properties": {}
@@ -1654,6 +1849,9 @@ async def main_async():
         alarm_client = client
         start_alarm_thread()
 
+        # ライフログスレッドを開始（ただし撮影は「ライフログ開始」コマンドまで待機）
+        start_lifelog_thread()
+
         receive_task = asyncio.create_task(client.receive_messages())
         input_task = asyncio.create_task(audio_input_loop(client, audio_handler))
 
@@ -1664,6 +1862,7 @@ async def main_async():
         print(f"Firebase: {'有効' if firebase_messenger else '無効'}")
         print(f"アラーム: {len(alarms)}件")
         print(f"カメラ: 有効")
+        print(f"ライフログ: 待機中（{CONFIG['lifelog_interval'] // 60}分間隔）")
         if CONFIG["use_button"]:
             print(f"操作: GPIO{CONFIG['button_pin']}のボタンを押している間話す")
         print("=" * 50)
@@ -1672,6 +1871,7 @@ async def main_async():
         print("  - 「写真を撮って」「何が見える？」")
         print("  - 「7時にアラームをセット」")
         print("  - 「スマホにメッセージを送って」")
+        print("  - 「ライフログ開始」「ライフログ停止」")
         print("=" * 50)
         print("\n--- ボタンを押して話しかけてください ---\n")
 
