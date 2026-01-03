@@ -1218,9 +1218,14 @@ def lifelog_thread_func():
 
         # 次の撮影まで待機（1秒ごとにチェックして停止に素早く対応）
         for _ in range(wait_time):
-            if not running or not lifelog_enabled:
+            if not running:
                 break
-            time.sleep(1)
+            if lifelog_enabled:
+                time.sleep(1)
+            else:
+                # ライフログ無効時は長めにスリープ
+                time.sleep(5)
+                break
 
 
 def start_lifelog_thread():
