@@ -480,6 +480,39 @@ def init_firebase():
         return False
 
 
+def generate_shutter_sound():
+    """シャッター音を生成"""
+    try:
+        sample_rate = 48000
+        duration = 0.08  # 短いクリック音
+
+        # クリック音（短いノイズ + 減衰）
+        samples = int(sample_rate * duration)
+        t = np.linspace(0, duration, samples, False)
+
+        # ホワイトノイズ + 高周波クリック
+        noise = np.random.uniform(-1, 1, samples)
+        click = np.sin(2 * np.pi * 2000 * t)
+
+        # 急速な減衰エンベロープ
+        envelope = np.exp(-t * 50)
+
+        # 合成
+        sound = ((noise * 0.3 + click * 0.7) * envelope * 0.4 * 32767).astype(np.int16)
+
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(sound.tobytes())
+
+        return wav_buffer.getvalue()
+    except Exception as e:
+        print(f"シャッター音生成エラー: {e}")
+        return None
+
+
 def generate_notification_sound():
     """通知音を生成"""
     try:
@@ -793,16 +826,18 @@ def send_recorded_voice_message():
     """録音した音声をスマホに送信"""
     global firebase_messenger, openai_client, voice_message_mode
 
+    # 使用開始時点で即座にリセット（どんな結果でも1回限り）
     voice_message_mode = False
-
-    # 同期録音を実行
-    wav_buffer = record_voice_message_sync()
-
-    if wav_buffer is None:
-        print("❌ 録音データがありません")
-        return False
+    print("🔄 voice_message_mode をリセットしました")
 
     try:
+        # 同期録音を実行
+        wav_buffer = record_voice_message_sync()
+
+        if wav_buffer is None:
+            print("❌ 録音データがありません")
+            return False
+
         # Whisperで文字起こし
         print("🔤 音声をテキストに変換中...")
         transcribed_text = None
@@ -829,7 +864,7 @@ def send_recorded_voice_message():
             return False
 
     except Exception as e:
-        print(f"音声メッセージエラー: {e}")
+        print(f"❌ 音声メッセージ送信エラー: {e}")
         return False
 
 
@@ -1133,6 +1168,11 @@ def capture_lifelog_photo():
         if result.returncode == 0:
             lifelog_photo_count += 1
             print(f"📸 ライフログ撮影: {image_path} (今日{lifelog_photo_count}枚目)")
+
+            # シャッター音を再生
+            shutter_sound = generate_shutter_sound()
+            if shutter_sound:
+                play_audio_direct(shutter_sound)
             return True
         else:
             print(f"❌ ライフログ撮影失敗: {result.stderr.decode()}")
@@ -1630,7 +1670,7 @@ class RealtimeClient:
                 "voice": CONFIG["voice"],
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
+                "input_audio_transcription": {"model": "whisper-1", "language": "ja"},
                 "turn_detection": None,
                 "tools": TOOLS,
                 "tool_choice": "auto",
@@ -1666,22 +1706,19 @@ class RealtimeClient:
             await self.ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
 
     async def send_text_message(self, text):
-        """テキストメッセージを送信して音声で応答させる（アラーム通知用）"""
+        """テキストメッセージを音声で読み上げる（アラーム通知用）"""
         if not self.is_connected or not self.ws:
             return
 
-        # conversation.item.createでテキストメッセージを送信
-        message = {
-            "type": "conversation.item.create",
-            "item": {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}]
+        # システムメッセージとして直接読み上げ（会話履歴に残さない）
+        await self.ws.send(json.dumps({
+            "type": "response.create",
+            "response": {
+                "modalities": ["audio", "text"],
+                "instructions": f"次のメッセージをそのまま読み上げてください。余計な説明は不要です: {text}"
             }
-        }
-        await self.ws.send(json.dumps(message))
-        await self.ws.send(json.dumps({"type": "response.create"}))
-        print(f"📢 テキスト送信: {text}")
+        }))
+        print(f"📢 システム通知: {text}")
 
     async def send_tool_result(self, call_id, result):
         """ツール実行結果を送信"""
