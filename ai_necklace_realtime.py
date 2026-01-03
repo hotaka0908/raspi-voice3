@@ -111,7 +111,7 @@ CONFIG = {
 
     # ライフログ設定
     "lifelog_dir": os.path.expanduser("~/lifelog"),
-    "lifelog_interval": 300,  # 5分（秒）
+    "lifelog_interval": 60,  # 1分（秒）
 
     # システムプロンプト
     "instructions": """あなたは親切なAIアシスタントです。
@@ -1516,7 +1516,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "lifelog_start",
-        "description": "ライフログ撮影を開始します。「ライフログ開始」「ライフログを始めて」「定期撮影を開始」などと言われたら使用。5分ごとに自動で写真を撮影して保存します。",
+        "description": "ライフログ撮影を開始します。「ライフログ開始」「ライフログを始めて」「定期撮影を開始」などと言われたら使用。1分ごとに自動で写真を撮影して保存します。",
         "parameters": {
             "type": "object",
             "properties": {}
