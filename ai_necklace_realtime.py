@@ -167,6 +167,9 @@ firebase_messenger = None
 voice_message_mode = False  # 音声メッセージ録音モード
 voice_message_buffer = []   # 録音バッファ
 
+# セッション管理
+last_conversation_time = None  # 最後の会話終了時刻
+SESSION_TIMEOUT = 30  # セッションタイムアウト（秒）
 
 # ライフログ関連
 lifelog_enabled = False
@@ -1806,7 +1809,9 @@ class RealtimeClient:
             await self.send_tool_result(call_id, result)
 
         elif event_type == "response.done":
+            global last_conversation_time
             self.is_responding = False
+            last_conversation_time = time.time()
             print("✅ 応答完了")
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
@@ -1844,14 +1849,18 @@ class RealtimeClient:
 
 async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioHandler):
     """音声入力ループ"""
-    global running, button, is_recording, voice_message_mode
+    global running, button, is_recording, voice_message_mode, last_conversation_time
 
     while running:
         if CONFIG["use_button"] and button:
             if button.is_pressed:
                 if not is_recording:
-                    # 毎回会話履歴をクリア（クリーンな状態で会話開始）
-                    await client.clear_conversation()
+                    # タイムアウトチェック（30秒無操作でクリア）
+                    if last_conversation_time is not None:
+                        elapsed = time.time() - last_conversation_time
+                        if elapsed >= SESSION_TIMEOUT:
+                            print(f"⏰ {SESSION_TIMEOUT}秒経過 - 会話履歴クリア")
+                            await client.clear_conversation()
 
                     # デバッグ: 現在のモードを表示
                     print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
