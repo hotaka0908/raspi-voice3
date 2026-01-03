@@ -167,6 +167,10 @@ firebase_messenger = None
 voice_message_mode = False  # 音声メッセージ録音モード
 voice_message_buffer = []   # 録音バッファ
 
+# セッション管理
+last_conversation_time = None  # 最後の会話終了時刻
+SESSION_TIMEOUT = 60  # セッションタイムアウト（秒）
+
 # ライフログ関連
 lifelog_enabled = False
 lifelog_thread = None
@@ -1797,7 +1801,9 @@ class RealtimeClient:
             await self.send_tool_result(call_id, result)
 
         elif event_type == "response.done":
+            global last_conversation_time
             self.is_responding = False
+            last_conversation_time = time.time()
             print("✅ 応答完了")
 
         elif event_type == "conversation.item.input_audio_transcription.completed":
@@ -1815,15 +1821,36 @@ class RealtimeClient:
             self.is_connected = False
             print("🔌 Realtime API切断")
 
+    async def reset_session(self):
+        """セッションをリセット（再接続）"""
+        global last_conversation_time
+        print("🔄 セッションをリセット中...")
+        try:
+            if self.ws:
+                await self.ws.close()
+                self.is_connected = False
+            await self.connect()
+            last_conversation_time = None
+            print("✅ セッションリセット完了（新しい会話を開始できます）")
+        except Exception as e:
+            print(f"❌ セッションリセットエラー: {e}")
+
 
 async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioHandler):
     """音声入力ループ"""
-    global running, button, is_recording, voice_message_mode
+    global running, button, is_recording, voice_message_mode, last_conversation_time
 
     while running:
         if CONFIG["use_button"] and button:
             if button.is_pressed:
                 if not is_recording:
+                    # セッションタイムアウトチェック（1分無操作でリセット）
+                    if last_conversation_time is not None:
+                        elapsed = time.time() - last_conversation_time
+                        if elapsed >= SESSION_TIMEOUT:
+                            print(f"⏰ {SESSION_TIMEOUT}秒無操作のためセッションをリセットします")
+                            await client.reset_session()
+
                     # デバッグ: 現在のモードを表示
                     print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
 
