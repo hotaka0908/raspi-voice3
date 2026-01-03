@@ -1736,6 +1736,8 @@ class RealtimeClient:
             }
         }
         await self.ws.send(json.dumps(message))
+        # 音声再生が完了するまで少し待つ
+        await asyncio.sleep(0.5)
         await self.ws.send(json.dumps({"type": "response.create"}))
         print(f"📤 ツール結果送信: {result[:100]}...")
 
