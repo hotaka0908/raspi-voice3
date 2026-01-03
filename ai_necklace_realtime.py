@@ -1846,9 +1846,15 @@ async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioH
                             await client.send_text_message("送信に失敗しました。")
                         continue
                     else:
-                        print("🔴 ボタン押下検出 - 録音開始")
+                        # AIが応答中なら終わるまで待つ
                         if client.is_responding:
-                            await client.cancel_response()
+                            print("⏳ AIの応答完了を待っています...")
+                            while client.is_responding and button.is_pressed:
+                                await asyncio.sleep(0.1)
+                            if not button.is_pressed:
+                                continue  # ボタンが離されたらスキップ
+
+                        print("🔴 ボタン押下検出 - 録音開始")
                         await client.clear_input_buffer()
 
                         if audio_handler.start_input_stream():
