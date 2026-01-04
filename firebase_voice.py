@@ -282,7 +282,8 @@ class FirebaseVoiceMessenger:
         Returns:
             メッセージリスト
         """
-        db_url = f"{self.db_url}/messages.json?orderBy=\"timestamp\"&limitToLast={limit}"
+        # シンプルなクエリ（orderByはインデックス設定が必要なため使わない）
+        db_url = f"{self.db_url}/messages.json"
         response = requests.get(db_url)
 
         if response.status_code != 200:
@@ -295,6 +296,8 @@ class FirebaseVoiceMessenger:
 
         messages = []
         for key, value in data.items():
+            if not isinstance(value, dict):
+                continue
             value["id"] = key
             # 自分以外からのメッセージのみ
             if value.get("from") != self.device_id:
@@ -303,7 +306,9 @@ class FirebaseVoiceMessenger:
 
         # タイムスタンプでソート（新しい順）
         messages.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-        return messages
+
+        # 件数制限
+        return messages[:limit]
 
     def download_audio(self, audio_url: str) -> bytes:
         """

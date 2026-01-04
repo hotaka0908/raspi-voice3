@@ -1,5 +1,5 @@
 [Unit]
-Description=AI Necklace Realtime Voice Assistant
+Description=AI Necklace Realtime Voice Assistant (Auto-Reconnect)
 After=network-online.target sound.target
 Wants=network-online.target sound.target
 # Wi-Fi接続が確立されるまで待機
@@ -13,18 +13,24 @@ WorkingDirectory=/home/hotaka/ai-necklace-realtime
 Environment=PATH=/home/hotaka/ai-necklace-realtime/venv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/hotaka/ai-necklace-realtime/venv/bin/python3 /home/hotaka/ai-necklace-realtime/ai_necklace_realtime.py
 ExecStopPost=/bin/sh -c '/usr/bin/pkill -9 -f ai_necklace_realtime || true'
+
+# 再起動設定（アプリ内再接続失敗時のフォールバック）
 Restart=always
-RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=10
+RestartSec=10
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+# ログ設定
 StandardOutput=journal
 StandardError=journal
+
+# 終了処理
 KillMode=control-group
 KillSignal=SIGTERM
-TimeoutStopSec=10
+TimeoutStopSec=15
 
 # オーディオデバイスへのアクセス許可
-SupplementaryGroups=audio
+SupplementaryGroups=audio gpio
 
 [Install]
 WantedBy=multi-user.target

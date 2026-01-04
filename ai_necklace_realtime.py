@@ -165,7 +165,33 @@ alarm_next_id = 1
 # Firebase関連
 firebase_messenger = None
 voice_message_mode = False  # 音声メッセージ録音モード
+voice_message_mode_timestamp = None  # 音声メッセージモード開始時刻
+VOICE_MESSAGE_MODE_TIMEOUT = 60  # 60秒でタイムアウト
 voice_message_buffer = []   # 録音バッファ
+
+
+def check_and_reset_voice_message_mode():
+    """voice_message_modeのタイムアウトをチェックし、必要ならリセット"""
+    global voice_message_mode, voice_message_mode_timestamp
+
+    if voice_message_mode and voice_message_mode_timestamp:
+        elapsed = time.time() - voice_message_mode_timestamp
+        if elapsed > VOICE_MESSAGE_MODE_TIMEOUT:
+            print(f"⚠️ voice_message_mode タイムアウト ({elapsed:.1f}秒経過) - リセット")
+            voice_message_mode = False
+            voice_message_mode_timestamp = None
+            return False  # タイムアウトでリセットされた
+    return voice_message_mode
+
+
+def reset_voice_message_mode():
+    """voice_message_modeを強制リセット（再接続時などに使用）"""
+    global voice_message_mode, voice_message_mode_timestamp
+
+    if voice_message_mode:
+        print("🔄 voice_message_mode を強制リセット")
+    voice_message_mode = False
+    voice_message_mode_timestamp = None
 
 # ライフログ関連
 lifelog_enabled = False
@@ -710,17 +736,18 @@ def on_voice_message_received(message):
 
 def voice_send_func(message_text=None):
     """音声メッセージ録音モードを開始"""
-    global firebase_messenger, voice_message_mode
+    global firebase_messenger, voice_message_mode, voice_message_mode_timestamp
 
     if not firebase_messenger:
         return "Firebase Voice Messengerが初期化されていません。"
 
-    # 録音モードを有効化
+    # 録音モードを有効化（タイムスタンプ付き）
     voice_message_mode = True
-    print("📢 音声メッセージモード開始")
+    voice_message_mode_timestamp = time.time()
+    print(f"📢 音声メッセージモード開始 (タイムアウト: {VOICE_MESSAGE_MODE_TIMEOUT}秒)")
 
-    # 重要: AIにはまだ送信完了していないことを明確に伝える
-    return "【録音待機中】ユーザーに「ボタンを押しながらメッセージを録音してください」と伝えてください。"
+    # シンプルな応答（AIがそのまま読み上げる）
+    return "ボタンを押して録音してください"
 
 
 def voice_send_photo_func():
@@ -860,10 +887,11 @@ def record_voice_message_sync():
 
 def send_recorded_voice_message():
     """録音した音声をスマホに送信"""
-    global firebase_messenger, openai_client, voice_message_mode
+    global firebase_messenger, openai_client, voice_message_mode, voice_message_mode_timestamp
 
     # 使用開始時点で即座にリセット（どんな結果でも1回限り）
     voice_message_mode = False
+    voice_message_mode_timestamp = None
     print("🔄 voice_message_mode をリセットしました")
 
     try:
@@ -1687,6 +1715,10 @@ class RealtimeAudioHandler:
 class RealtimeClient:
     """OpenAI Realtime APIクライアント"""
 
+    # 再接続設定
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_DELAY_BASE = 2  # 秒（指数バックオフの基底）
+
     def __init__(self, audio_handler: RealtimeAudioHandler):
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -1698,6 +1730,8 @@ class RealtimeClient:
         self.is_responding = False
         self.pending_tool_calls = {}
         self.loop = None  # イベントループ参照（スレッド間通信用）
+        self.needs_reconnect = False  # 再接続が必要かどうか
+        self.reconnect_count = 0  # 連続再接続回数
 
     async def connect(self):
         url = f"wss://api.openai.com/v1/realtime?model={CONFIG['model']}"
@@ -1797,13 +1831,17 @@ class RealtimeClient:
 
                 event = json.loads(message)
                 await self.handle_event(event)
+                # 正常にメッセージを受信できたら再接続カウントをリセット
+                self.reconnect_count = 0
 
-        except websockets.exceptions.ConnectionClosed:
-            print("⚠️ WebSocket接続が閉じられました - 再起動します")
+        except websockets.exceptions.ConnectionClosed as e:
+            print(f"⚠️ WebSocket接続が閉じられました (code={e.code}, reason={e.reason})")
             self.is_connected = False
-            running = False  # プログラムを終了させてsystemdに再起動を任せる
+            self.needs_reconnect = True  # 再接続を要求
         except Exception as e:
             print(f"⚠️ 受信エラー: {e}")
+            self.is_connected = False
+            self.needs_reconnect = True  # 再接続を要求
 
     async def handle_event(self, event):
         event_type = event.get("type", "")
@@ -1876,9 +1914,46 @@ class RealtimeClient:
 
     async def disconnect(self):
         if self.ws:
-            await self.ws.close()
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
             self.is_connected = False
             print("🔌 Realtime API切断")
+
+    async def reconnect(self):
+        """接続を再確立する（指数バックオフ付き）"""
+        global running
+
+        self.reconnect_count += 1
+        if self.reconnect_count > self.MAX_RECONNECT_ATTEMPTS:
+            print(f"❌ 再接続回数が上限({self.MAX_RECONNECT_ATTEMPTS}回)に達しました。プログラムを終了します。")
+            running = False
+            return False
+
+        # 指数バックオフで待機
+        delay = self.RECONNECT_DELAY_BASE ** self.reconnect_count
+        delay = min(delay, 60)  # 最大60秒
+        print(f"🔄 {delay}秒後に再接続を試みます... (試行 {self.reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS})")
+        await asyncio.sleep(delay)
+
+        # 古い接続をクリーンアップ
+        await self.disconnect()
+        self.needs_reconnect = False
+        self.pending_tool_calls = {}
+
+        # 状態をリセット（voice_message_mode などの古い状態を引き継がない）
+        reset_voice_message_mode()
+
+        try:
+            await self.connect()
+            print("✅ 再接続成功!")
+            return True
+        except Exception as e:
+            print(f"❌ 再接続失敗: {e}")
+            self.needs_reconnect = True
+            return False
 
 async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioHandler):
     """音声入力ループ"""
@@ -1888,10 +1963,11 @@ async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioH
         if CONFIG["use_button"] and button:
             if button.is_pressed:
                 if not is_recording:
-                    # デバッグ: 現在のモードを表示
-                    print(f"[DEBUG] voice_message_mode = {voice_message_mode}")
+                    # タイムアウトチェック付きで voice_message_mode を確認
+                    current_voice_mode = check_and_reset_voice_message_mode()
+                    print(f"[DEBUG] voice_message_mode = {current_voice_mode}")
 
-                    if voice_message_mode:
+                    if current_voice_mode:
                         # 音声メッセージモード: 別スレッドで同期録音を実行
                         print("🔴 音声メッセージ録音開始（スレッドモード）")
                         is_recording = True
@@ -1934,7 +2010,7 @@ async def audio_input_loop(client: RealtimeClient, audio_handler: RealtimeAudioH
 
 
 async def main_async():
-    """非同期メインループ"""
+    """非同期メインループ（自動再接続対応）"""
     global running, button, alarm_client, global_audio_handler
 
     audio_handler = RealtimeAudioHandler()
@@ -1942,60 +2018,88 @@ async def main_async():
     global_audio_handler = audio_handler  # グローバルに設定（スマホ音声再生用）
 
     client = RealtimeClient(audio_handler)
+    receive_task = None
+    input_task = None
+    first_start = True
 
     try:
-        await client.connect()
-
-        # アラーム監視スレッドを開始
+        # アラーム監視スレッドを開始（接続状態に関係なく動作）
         alarm_client = client
         start_alarm_thread()
 
         # ライフログスレッドを開始（ただし撮影は「ライフログ開始」コマンドまで待機）
         start_lifelog_thread()
 
-        receive_task = asyncio.create_task(client.receive_messages())
-        input_task = asyncio.create_task(audio_input_loop(client, audio_handler))
-
-        print("\n" + "=" * 50)
-        print("AI Necklace Realtime 起動（全機能版）")
-        print("=" * 50)
-        print(f"Gmail: {'有効' if gmail_service else '無効'}")
-        print(f"Firebase: {'有効' if firebase_messenger else '無効'}")
-        print(f"アラーム: {len(alarms)}件")
-        print(f"カメラ: 有効")
-        print(f"ライフログ: 待機中（{CONFIG['lifelog_interval'] // 60}分間隔）")
-        if CONFIG["use_button"]:
-            print(f"操作: GPIO{CONFIG['button_pin']}のボタンを押している間話す")
-        print("=" * 50)
-        print("\nコマンド例:")
-        print("  - 「メールを確認して」")
-        print("  - 「写真を撮って」「何が見える？」")
-        print("  - 「7時にアラームをセット」")
-        print("  - 「スマホにメッセージを送って」")
-        print("  - 「ライフログ開始」「ライフログ停止」")
-        print("=" * 50)
-        print("\n--- ボタンを押して話しかけてください ---\n")
-
-        # 起動完了音を再生
-        startup_sound = generate_startup_sound()
-        if startup_sound:
-            audio_handler.play_audio_buffer(startup_sound)
-            print("🔔 起動完了")
-
         while running:
+            # 接続されていない場合は接続を試みる
+            if not client.is_connected:
+                if client.needs_reconnect:
+                    # 再接続
+                    success = await client.reconnect()
+                    if not success:
+                        continue
+                else:
+                    # 初回接続
+                    try:
+                        await client.connect()
+                    except Exception as e:
+                        print(f"❌ 接続エラー: {e}")
+                        print("🔄 5秒後に再試行します...")
+                        await asyncio.sleep(5)
+                        continue
+
+                # タスクを開始/再開
+                if receive_task is None or receive_task.done():
+                    receive_task = asyncio.create_task(client.receive_messages())
+                if input_task is None or input_task.done():
+                    input_task = asyncio.create_task(audio_input_loop(client, audio_handler))
+
+                if first_start:
+                    print("\n" + "=" * 50)
+                    print("AI Necklace Realtime 起動（全機能版）")
+                    print("=" * 50)
+                    print(f"Gmail: {'有効' if gmail_service else '無効'}")
+                    print(f"Firebase: {'有効' if firebase_messenger else '無効'}")
+                    print(f"アラーム: {len(alarms)}件")
+                    print(f"カメラ: 有効")
+                    print(f"ライフログ: 待機中（{CONFIG['lifelog_interval'] // 60}分間隔）")
+                    if CONFIG["use_button"]:
+                        print(f"操作: GPIO{CONFIG['button_pin']}のボタンを押している間話す")
+                    print("=" * 50)
+                    print("\nコマンド例:")
+                    print("  - 「メールを確認して」")
+                    print("  - 「写真を撮って」「何が見える？」")
+                    print("  - 「7時にアラームをセット」")
+                    print("  - 「スマホにメッセージを送って」")
+                    print("  - 「ライフログ開始」「ライフログ停止」")
+                    print("=" * 50)
+                    print("\n--- ボタンを押して話しかけてください ---\n")
+
+                    # 起動完了音を再生
+                    startup_sound = generate_startup_sound()
+                    if startup_sound:
+                        audio_handler.play_audio_buffer(startup_sound)
+                        print("🔔 起動完了")
+                    first_start = False
+                else:
+                    # 再接続時は短い通知音
+                    print("🔔 再接続完了 - 会話を再開できます")
+
             await asyncio.sleep(0.1)
 
-        receive_task.cancel()
-        input_task.cancel()
-
-        try:
-            await receive_task
-        except asyncio.CancelledError:
-            pass
-        try:
-            await input_task
-        except asyncio.CancelledError:
-            pass
+        # タスクをキャンセル
+        if receive_task:
+            receive_task.cancel()
+            try:
+                await receive_task
+            except asyncio.CancelledError:
+                pass
+        if input_task:
+            input_task.cancel()
+            try:
+                await input_task
+            except asyncio.CancelledError:
+                pass
 
     except Exception as e:
         print(f"❌ エラー: {e}")
